@@ -1620,7 +1620,14 @@
 
     // Host, uzak oyuncuyu (client'ı) günceller. 
     // Client ise diğer oyuncuyu sadece hedefe lerp ile ilerletir (updatePlayer çalıştırmaz)
+    // AMA misafir ekranında hostun (remote) şizofrenik takılmasını önlemek için
+    // misafir de remote oyuncu için updatePlayer'ı host'un tuşlarıyla çalıştırsın! (Prediction for remote)
     if (network.role === 'host' && remotePlayer) {
+      updateCharge(remotePlayer, dt);
+      updatePlayer(remotePlayer, network.remoteKeys, dt);
+    } else if (network.role === 'client' && remotePlayer) {
+      // Misafir, host'un son bildiği tuşlarına göre onun da fiziğini lokalde yürütsün.
+      // applyClientSmoothing içinde zaten "target" pozisyona doğru lerp'liyoruz.
       updateCharge(remotePlayer, dt);
       updatePlayer(remotePlayer, network.remoteKeys, dt);
     }
@@ -1712,12 +1719,24 @@
         }
         // Local oyuncunun dönüşü (facing) tamamen prediction'a bırakılır, lerp edilmez.
       } else {
-        // Remote oyuncu için tam smoothing
+        // Remote oyuncu (Host) için client'ta prediction yapıldığından 
+        // smoothing yerine reconciliation yapmamız gerekir ki "şizofrenik" titreme (bir ileri bir geri) gitsin
+        const dx = target.x - player.x;
+        const dy = target.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        
+        if (dist > 50) { 
+          player.x = target.x;
+          player.y = target.y;
+        } else if (dist > 2) {
+          player.x += dx * 0.1;
+          player.y += dy * 0.1;
+        }
+        
         player.r = lerp(player.r, target.r, positionBlend);
-        player.x = lerp(player.x, target.x, positionBlend);
-        player.y = lerp(player.y, target.y, positionBlend);
         player.vx = lerp(player.vx, target.vx, velocityBlend);
         player.vy = lerp(player.vy, target.vy, velocityBlend);
+        
         const facing = normalize(
           lerp(player.facing.x, target.facing.x, facingBlend),
           lerp(player.facing.y, target.facing.y, facingBlend),
