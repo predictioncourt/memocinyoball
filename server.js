@@ -94,6 +94,14 @@ wss.on('connection', (ws) => {
       }
       return;
     }
+    if (msg.type === 'menu_action') {
+      if (id === hostId) return;
+      const hostWs = clients.get(hostId);
+      if (hostWs) {
+        send(hostWs, { type: 'menu_action', from: id, action: msg.action || null });
+      }
+      return;
+    }
     if (msg.type === 'chat') {
       const text = typeof msg.text === 'string' ? msg.text : '';
       if (!text.trim()) return;
