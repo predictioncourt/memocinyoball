@@ -648,8 +648,8 @@
     };
     const mapSnapshotPlayerId = (id) => {
       if (network.role !== 'client') return id;
-      if (id === state.localPlayerId) return state.remotePlayerId;
-      if (id === state.remotePlayerId) return state.localPlayerId;
+      if (id === 'local') return 'remote';
+      if (id === 'remote') return 'local';
       return id;
     };
     const isClient = network.role === 'client';
@@ -1652,10 +1652,6 @@
       if (goalResult && state.match.overtime) {
         resetMatch();
         return;
-      }
-    } else {
-      if (localPlayer) {
-        resolvePlayerBallCollision(localPlayer);
       }
     }
 
