@@ -112,6 +112,8 @@
     remoteKeys: new Set(),
     snapshotTimer: null,
     lastRemoteKeys: new Set(),
+    snapshotTargets: { players: {}, ball: null },
+    clientSmoothingReady: false,
   };
 
   const lobby = {
@@ -232,6 +234,11 @@
 
   function getRemotePlayer() {
     return state.players[state.remotePlayerId];
+  }
+
+  function resetClientSmoothing() {
+    network.snapshotTargets = { players: {}, ball: null };
+    network.clientSmoothingReady = false;
   }
 
   function setupPlayers(localName, remoteName) {
@@ -539,7 +546,7 @@
       if (network.role === 'host') {
         sendNetworkMessage({ type: 'snapshot', state: buildSnapshot() });
       }
-    }, 50);
+    }, 33);
   }
 
   function handleRemoteKeyChange(nextKeys) {
@@ -635,45 +642,79 @@
       const scaleY = localField.height / snapshotField.height;
       return sourceValue * ((scaleX + scaleY) / 2);
     };
+    const isClient = network.role === 'client';
+    let hasSnapshotData = false;
     if (snapshot.ball) {
       const ball = state.ball;
-      if (Number.isFinite(snapshot.ball.r)) {
-        ball.r = clamp(mapLength(snapshot.ball.r), 8, 12);
-      }
-      ball.x = mapX(snapshot.ball.x ?? ball.x);
-      ball.y = mapY(snapshot.ball.y ?? ball.y);
-      ball.vx = mapVX(snapshot.ball.vx ?? ball.vx);
-      ball.vy = mapVY(snapshot.ball.vy ?? ball.vy);
-      ball.z = mapLength(snapshot.ball.z ?? ball.z);
-      ball.vz = mapLength(snapshot.ball.vz ?? ball.vz);
-      ball.curveTime = snapshot.ball.curveTime ?? ball.curveTime;
-      ball.curveX = snapshot.ball.curveX ?? ball.curveX;
-      ball.curveY = snapshot.ball.curveY ?? ball.curveY;
-      ball.curveForce = mapLength(snapshot.ball.curveForce ?? ball.curveForce);
+      hasSnapshotData = true;
+      const nextBall = {
+        r: Number.isFinite(snapshot.ball.r) ? clamp(mapLength(snapshot.ball.r), 8, 12) : ball.r,
+        x: mapX(snapshot.ball.x ?? ball.x),
+        y: mapY(snapshot.ball.y ?? ball.y),
+        vx: mapVX(snapshot.ball.vx ?? ball.vx),
+        vy: mapVY(snapshot.ball.vy ?? ball.vy),
+        z: mapLength(snapshot.ball.z ?? ball.z),
+        vz: mapLength(snapshot.ball.vz ?? ball.vz),
+        curveTime: snapshot.ball.curveTime ?? ball.curveTime,
+        curveX: snapshot.ball.curveX ?? ball.curveX,
+        curveY: snapshot.ball.curveY ?? ball.curveY,
+        curveForce: mapLength(snapshot.ball.curveForce ?? ball.curveForce),
+      };
       if (hasLocalFieldBounds) {
-        ball.x = clamp(ball.x, localField.left + ball.r, localField.right - ball.r);
-        ball.y = clamp(ball.y, localField.top + ball.r, localField.bottom - ball.r);
+        nextBall.x = clamp(nextBall.x, localField.left + nextBall.r, localField.right - nextBall.r);
+        nextBall.y = clamp(nextBall.y, localField.top + nextBall.r, localField.bottom - nextBall.r);
+      }
+      if (isClient) {
+        network.snapshotTargets.ball = nextBall;
+        if (!network.clientSmoothingReady) {
+          Object.assign(ball, nextBall);
+        }
+      } else {
+        Object.assign(ball, nextBall);
       }
     }
     if (snapshot.players) {
       snapshot.players.forEach((p) => {
         const player = state.players[p.id];
         if (!player) return;
+        hasSnapshotData = true;
+        const nextPlayer = {
+          r: player.r,
+          x: mapX(p.x),
+          y: mapY(p.y),
+          vx: mapVX(p.vx),
+          vy: mapVY(p.vy),
+          facing: player.facing,
+        };
         if (Number.isFinite(p.r)) {
           const maxRadius = Math.max(11, localField.height * 0.06);
-          player.r = clamp(mapLength(p.r), 11, maxRadius);
+          nextPlayer.r = clamp(mapLength(p.r), 11, maxRadius);
         }
-        player.x = mapX(p.x);
-        player.y = mapY(p.y);
-        player.vx = mapVX(p.vx);
-        player.vy = mapVY(p.vy);
         if (hasLocalFieldBounds) {
-          player.x = clamp(player.x, localField.left + player.r, localField.right - player.r);
-          player.y = clamp(player.y, localField.top + player.r, localField.bottom - player.r);
+          nextPlayer.x = clamp(nextPlayer.x, localField.left + nextPlayer.r, localField.right - nextPlayer.r);
+          nextPlayer.y = clamp(nextPlayer.y, localField.top + nextPlayer.r, localField.bottom - nextPlayer.r);
         }
         const facingX = safeNumber(p.facing?.x, player.facing.x);
         const facingY = safeNumber(p.facing?.y, player.facing.y);
-        player.facing = normalize(facingX, facingY);
+        nextPlayer.facing = normalize(facingX, facingY);
+        if (isClient) {
+          network.snapshotTargets.players[p.id] = nextPlayer;
+          if (!network.clientSmoothingReady) {
+            player.r = nextPlayer.r;
+            player.x = nextPlayer.x;
+            player.y = nextPlayer.y;
+            player.vx = nextPlayer.vx;
+            player.vy = nextPlayer.vy;
+            player.facing = nextPlayer.facing;
+          }
+        } else {
+          player.r = nextPlayer.r;
+          player.x = nextPlayer.x;
+          player.y = nextPlayer.y;
+          player.vx = nextPlayer.vx;
+          player.vy = nextPlayer.vy;
+          player.facing = nextPlayer.facing;
+        }
         player.kickFlash = p.kickFlash;
         if (p.character) {
           player.character = p.character;
@@ -690,6 +731,9 @@
           player.charge.air.time = p.charge.air.time;
         }
       });
+    }
+    if (isClient && hasSnapshotData && !network.clientSmoothingReady) {
+      network.clientSmoothingReady = true;
     }
     lobby.started = snapshot.lobby?.started ?? lobby.started;
     lobby.mode = snapshot.lobby?.mode ?? lobby.mode;
@@ -756,6 +800,7 @@
       if (msg.type === 'role') {
         network.role = msg.role;
         network.id = msg.id;
+        resetClientSmoothing();
         const remoteName = network.role === 'host' ? 'Rakip' : 'Ev Sahibi';
         setupPlayers('Sen', remoteName);
         resetLobbyForPlayers('Sen', remoteName);
@@ -1589,6 +1634,56 @@
     });
   }
 
+  function applyClientSmoothing(dt) {
+    if (network.role !== 'client' || !network.clientSmoothingReady) return;
+    const f = state.field;
+    const hasBounds = Number.isFinite(f.left)
+      && Number.isFinite(f.right)
+      && Number.isFinite(f.top)
+      && Number.isFinite(f.bottom)
+      && f.right > f.left
+      && f.bottom > f.top;
+    const positionBlend = 1 - Math.exp(-dt * 14);
+    const velocityBlend = 1 - Math.exp(-dt * 10);
+    const facingBlend = 1 - Math.exp(-dt * 18);
+    const ballTarget = network.snapshotTargets.ball;
+    if (ballTarget) {
+      state.ball.r = lerp(state.ball.r, ballTarget.r, positionBlend);
+      state.ball.x = lerp(state.ball.x, ballTarget.x, positionBlend);
+      state.ball.y = lerp(state.ball.y, ballTarget.y, positionBlend);
+      state.ball.vx = lerp(state.ball.vx, ballTarget.vx, velocityBlend);
+      state.ball.vy = lerp(state.ball.vy, ballTarget.vy, velocityBlend);
+      state.ball.z = lerp(state.ball.z, ballTarget.z, positionBlend);
+      state.ball.vz = lerp(state.ball.vz, ballTarget.vz, velocityBlend);
+      state.ball.curveTime = ballTarget.curveTime;
+      state.ball.curveX = ballTarget.curveX;
+      state.ball.curveY = ballTarget.curveY;
+      state.ball.curveForce = lerp(state.ball.curveForce, ballTarget.curveForce, velocityBlend);
+      if (hasBounds) {
+        state.ball.x = clamp(state.ball.x, f.left + state.ball.r, f.right - state.ball.r);
+        state.ball.y = clamp(state.ball.y, f.top + state.ball.r, f.bottom - state.ball.r);
+      }
+    }
+    state.playerOrder.forEach((player) => {
+      const target = network.snapshotTargets.players[player.id];
+      if (!target) return;
+      player.r = lerp(player.r, target.r, positionBlend);
+      player.x = lerp(player.x, target.x, positionBlend);
+      player.y = lerp(player.y, target.y, positionBlend);
+      player.vx = lerp(player.vx, target.vx, velocityBlend);
+      player.vy = lerp(player.vy, target.vy, velocityBlend);
+      const facing = normalize(
+        lerp(player.facing.x, target.facing.x, facingBlend),
+        lerp(player.facing.y, target.facing.y, facingBlend),
+      );
+      player.facing = facing;
+      if (hasBounds) {
+        player.x = clamp(player.x, f.left + player.r, f.right - player.r);
+        player.y = clamp(player.y, f.top + player.r, f.bottom - player.r);
+      }
+    });
+  }
+
   function drawField() {
     const f = state.field;
     const gradient = ctx.createLinearGradient(0, f.top, 0, f.bottom);
@@ -1960,6 +2055,7 @@
       if (steps === MAX_SIM_STEPS_PER_FRAME) {
         fixedStepAccumulator = 0;
       }
+      applyClientSmoothing(dt);
       render();
     }
     requestAnimationFrame(tick);
