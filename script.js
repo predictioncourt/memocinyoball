@@ -576,24 +576,104 @@
     }
     state.mode = snapshot.mode || state.mode;
     state.score = snapshot.score || state.score;
-    state.freeze = snapshot.freeze || 0;
+    state.freeze = snapshot.freeze ?? 0;
     if (snapshot.match) {
       state.match.duration = snapshot.match.duration ?? state.match.duration;
       state.match.time = snapshot.match.time ?? state.match.time;
       state.match.overtime = snapshot.match.overtime ?? state.match.overtime;
     }
+    if (snapshot.menuStep) {
+      state.menuStep = snapshot.menuStep;
+    }
+    if (snapshot.selectedCharacter) {
+      state.selectedCharacter = snapshot.selectedCharacter;
+    }
+    const snapshotField = snapshot.field;
+    const localField = state.field;
+    const hasFieldMapping = snapshotField
+      && Number.isFinite(snapshotField.left)
+      && Number.isFinite(snapshotField.top)
+      && Number.isFinite(snapshotField.width)
+      && Number.isFinite(snapshotField.height)
+      && snapshotField.width > 0
+      && snapshotField.height > 0
+      && localField.width > 0
+      && localField.height > 0;
+    const hasLocalFieldBounds = Number.isFinite(localField.left)
+      && Number.isFinite(localField.right)
+      && Number.isFinite(localField.top)
+      && Number.isFinite(localField.bottom)
+      && localField.right > localField.left
+      && localField.bottom > localField.top;
+    const safeNumber = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+    const mapX = (x) => {
+      const sourceX = safeNumber(x, localField.centerX);
+      if (!hasFieldMapping) return sourceX;
+      const ratio = clamp((sourceX - snapshotField.left) / snapshotField.width, 0, 1);
+      return localField.left + ratio * localField.width;
+    };
+    const mapY = (y) => {
+      const sourceY = safeNumber(y, localField.centerY);
+      if (!hasFieldMapping) return sourceY;
+      const ratio = clamp((sourceY - snapshotField.top) / snapshotField.height, 0, 1);
+      return localField.top + ratio * localField.height;
+    };
+    const mapVX = (vx) => {
+      const sourceVX = safeNumber(vx, 0);
+      if (!hasFieldMapping) return sourceVX;
+      return sourceVX * (localField.width / snapshotField.width);
+    };
+    const mapVY = (vy) => {
+      const sourceVY = safeNumber(vy, 0);
+      if (!hasFieldMapping) return sourceVY;
+      return sourceVY * (localField.height / snapshotField.height);
+    };
+    const mapLength = (value) => {
+      const sourceValue = safeNumber(value, 0);
+      if (!hasFieldMapping) return sourceValue;
+      const scaleX = localField.width / snapshotField.width;
+      const scaleY = localField.height / snapshotField.height;
+      return sourceValue * ((scaleX + scaleY) / 2);
+    };
     if (snapshot.ball) {
-      Object.assign(state.ball, snapshot.ball);
+      const ball = state.ball;
+      if (Number.isFinite(snapshot.ball.r)) {
+        ball.r = clamp(mapLength(snapshot.ball.r), 8, 12);
+      }
+      ball.x = mapX(snapshot.ball.x ?? ball.x);
+      ball.y = mapY(snapshot.ball.y ?? ball.y);
+      ball.vx = mapVX(snapshot.ball.vx ?? ball.vx);
+      ball.vy = mapVY(snapshot.ball.vy ?? ball.vy);
+      ball.z = mapLength(snapshot.ball.z ?? ball.z);
+      ball.vz = mapLength(snapshot.ball.vz ?? ball.vz);
+      ball.curveTime = snapshot.ball.curveTime ?? ball.curveTime;
+      ball.curveX = snapshot.ball.curveX ?? ball.curveX;
+      ball.curveY = snapshot.ball.curveY ?? ball.curveY;
+      ball.curveForce = mapLength(snapshot.ball.curveForce ?? ball.curveForce);
+      if (hasLocalFieldBounds) {
+        ball.x = clamp(ball.x, localField.left + ball.r, localField.right - ball.r);
+        ball.y = clamp(ball.y, localField.top + ball.r, localField.bottom - ball.r);
+      }
     }
     if (snapshot.players) {
       snapshot.players.forEach((p) => {
         const player = state.players[p.id];
         if (!player) return;
-        player.x = p.x;
-        player.y = p.y;
-        player.vx = p.vx;
-        player.vy = p.vy;
-        player.facing = p.facing;
+        if (Number.isFinite(p.r)) {
+          const maxRadius = Math.max(11, localField.height * 0.06);
+          player.r = clamp(mapLength(p.r), 11, maxRadius);
+        }
+        player.x = mapX(p.x);
+        player.y = mapY(p.y);
+        player.vx = mapVX(p.vx);
+        player.vy = mapVY(p.vy);
+        if (hasLocalFieldBounds) {
+          player.x = clamp(player.x, localField.left + player.r, localField.right - player.r);
+          player.y = clamp(player.y, localField.top + player.r, localField.bottom - player.r);
+        }
+        const facingX = safeNumber(p.facing?.x, player.facing.x);
+        const facingY = safeNumber(p.facing?.y, player.facing.y);
+        player.facing = normalize(facingX, facingY);
         player.kickFlash = p.kickFlash;
         if (p.character) {
           player.character = p.character;
@@ -626,7 +706,15 @@
         time: state.match.time,
         overtime: state.match.overtime,
       },
+      menuStep: state.menuStep,
+      selectedCharacter: state.selectedCharacter,
       ball: { ...state.ball },
+      field: {
+        left: state.field.left,
+        top: state.field.top,
+        width: state.field.width,
+        height: state.field.height,
+      },
       players: state.playerOrder.map((player) => ({
         id: player.id,
         x: player.x,
@@ -682,6 +770,10 @@
           const next = new Set(msg.keys || []);
           handleRemoteKeyChange(next);
           network.remoteKeys = next;
+        }
+      } else if (msg.type === 'menu_action') {
+        if (network.role === 'host') {
+          applyMenuAction(msg.action);
         }
       } else if (msg.type === 'chat') {
         if (msg.from === network.id) return;
@@ -761,7 +853,8 @@
     state.view.w = w;
     state.view.h = h;
 
-    computeField();
+    const shouldReset = state.mode === 'menu';
+    computeField(shouldReset);
   }
 
   function computeWorldScale(fieldWidth) {
@@ -955,6 +1048,42 @@
     }
   }
 
+  function applyMenuAction(action) {
+    if (!action || state.mode !== 'menu') return;
+
+    if (action.type === 'field' && state.menuStep === 'field') {
+      if (action.value === 'wide' || action.value === 'medium' || action.value === 'short') {
+        state.fieldType = action.value;
+        computeField();
+        state.menuStep = 'character';
+      }
+      return;
+    }
+
+    if (action.type === 'character' && state.menuStep === 'character') {
+      if (action.value === 'mbappe' || action.value === 'juninho') {
+        setLocalCharacter(action.value);
+        state.menuStep = 'mode';
+      }
+      return;
+    }
+
+    if (action.type === 'mode' && state.menuStep === 'mode') {
+      if (network.connected) {
+        if (action.value === 1) {
+          setMode(1);
+        }
+      } else if (action.value === 2 || action.value === 3 || action.value === 4) {
+        setMode(action.value);
+      }
+      return;
+    }
+
+    if (action.type === 'start' && state.menuStep === 'mode') {
+      startMatch();
+    }
+  }
+
   function handleKeyDown(event) {
     if (controlBindingTarget) {
       event.preventDefault();
@@ -1007,45 +1136,60 @@
 
     if (state.mode === 'menu') {
       if (network.role === 'client') {
+        if (event.code === KEYS.wide) {
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'wide' } });
+        } else if (event.code === KEYS.medium) {
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'medium' } });
+        } else if (event.code === KEYS.short) {
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'short' } });
+        } else if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
+          if (state.menuStep === 'character') {
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'mbappe' } });
+          } else {
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 1 } });
+          }
+        } else if (event.code === KEYS.mode3 || event.code === 'Numpad2') {
+          if (state.menuStep === 'character') {
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'juninho' } });
+          } else if (!network.connected) {
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 3 } });
+          }
+        } else if (event.code === KEYS.mode4 && !network.connected) {
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 4 } });
+        } else if (event.code === KEYS.start) {
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'start' } });
+        }
         return;
       }
       if (state.menuStep === 'field') {
         if (event.code === KEYS.wide) {
-          state.fieldType = 'wide';
-          computeField();
-          state.menuStep = 'character';
+          applyMenuAction({ type: 'field', value: 'wide' });
         } else if (event.code === KEYS.medium) {
-          state.fieldType = 'medium';
-          computeField();
-          state.menuStep = 'character';
+          applyMenuAction({ type: 'field', value: 'medium' });
         } else if (event.code === KEYS.short) {
-          state.fieldType = 'short';
-          computeField();
-          state.menuStep = 'character';
+          applyMenuAction({ type: 'field', value: 'short' });
         }
       } else if (state.menuStep === 'character') {
         if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
-          setLocalCharacter('mbappe');
-          state.menuStep = 'mode';
+          applyMenuAction({ type: 'character', value: 'mbappe' });
         } else if (event.code === KEYS.mode3 || event.code === 'Numpad2') {
-          setLocalCharacter('juninho');
-          state.menuStep = 'mode';
+          applyMenuAction({ type: 'character', value: 'juninho' });
         }
       } else if (state.menuStep === 'mode') {
         if (network.connected) {
           if (event.code === KEYS.mode2) {
-            setMode(1);
+            applyMenuAction({ type: 'mode', value: 1 });
           } else if (event.code === KEYS.start) {
-            startMatch();
+            applyMenuAction({ type: 'start' });
           }
         } else if (event.code === KEYS.mode2) {
-          setMode(2);
+          applyMenuAction({ type: 'mode', value: 2 });
         } else if (event.code === KEYS.mode3) {
-          setMode(3);
+          applyMenuAction({ type: 'mode', value: 3 });
         } else if (event.code === KEYS.mode4) {
-          setMode(4);
+          applyMenuAction({ type: 'mode', value: 4 });
         } else if (event.code === KEYS.start) {
-          startMatch();
+          applyMenuAction({ type: 'start' });
         }
       }
       return;
